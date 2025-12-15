@@ -2,6 +2,8 @@
 
 GPS-based signal strength mapping tool supporting ADALM-Pluto, SDRplay, and RTL-SDR hardware with real-time visualization and CSV logging.
 
+![SigFinder Screenshot](image.png)
+
 ## Quick Start
 
 ### 1. Install System Dependencies
