@@ -14,7 +14,7 @@
 
 ## Overview
 
-SigFinder is a GPS-based signal strength mapping tool that combines SDR (Software Defined Radio) hardware with GPS data to visualize and analyze radio frequency signals. The application provides real-time mapping, CSV logging, and advanced signal analysis features.
+SigFinder is a GPS-based signal strength mapping tool that combines SDR (Software Defined Radio) hardware with GPS data to visualise and analyse radio frequency signals. The application provides real-time mapping, CSV logging, and advanced signal analysis features.
 
 ## Main Window
 
@@ -81,11 +81,11 @@ Closes the application.
 
 ### View Menu
 
-#### Center on GPS (Ctrl+L)
-Centers the map view on your current GPS position.
+#### Centre on GPS (Ctrl+L)
+Centres the map view on your current GPS position.
 
 **What it does:**
-- Moves the map to show your current location in the center
+- Moves the map to show your current location in the centre
 - Zooms to an appropriate level (zoom level 14)
 
 **When to use:**
@@ -152,7 +152,7 @@ Removes all triggered markers from the map.
 ### Analyse Menu
 
 #### Signal Analysis... (Ctrl+A)
-Opens the Signal Analysis window for advanced data visualization and origin estimation.
+Opens the Signal Analysis window for advanced data visualisation and origin estimation.
 
 **What it does:**
 - Opens a new window with a Leaflet map
@@ -161,7 +161,7 @@ Opens the Signal Analysis window for advanced data visualization and origin esti
 
 **When to use:**
 - After completing a survey session
-- To analyze historical data
+- To analyse historical data
 - To compare multiple tracking sessions
 - To estimate transmitter location
 
@@ -183,7 +183,7 @@ Displays application information.
 
 ## Signal Analysis Window
 
-The Signal Analysis window provides advanced tools for analyzing logged signal data and estimating transmitter locations.
+The Signal Analysis window provides advanced tools for analysing logged signal data and estimating transmitter locations.
 
 ### File Menu (Analysis Window)
 
@@ -216,7 +216,7 @@ Sets the minimum signal strength threshold for analysis.
 ### Analysis Menu (Analysis Window)
 
 #### Run Analysis (Ctrl+R)
-Processes loaded data and updates the map visualization.
+Processes loaded data and updates the map visualisation.
 
 **What it does:**
 1. **Filters data** using minimum RSSI threshold
@@ -224,7 +224,7 @@ Processes loaded data and updates the map visualization.
 3. **Detects oscillations** and removes noisy segments (>5 oscillations per 2 seconds)
 4. **Estimates signal origin** for each dataset using:
    - Top 60% strongest signals
-   - RSSI-weighted geometric center
+   - RSSI-weighted geometric centre
    - Widest NSEW (North-South-East-West) dimension
 5. **Calculates combined origin** from all visible datasets
 6. **Displays on map:**
@@ -280,7 +280,7 @@ Processes loaded data and updates the map visualization.
 3. **Start New Session** (File → New Session) and choose a save location
 4. Begin moving through your search area
 5. **Triggered markers** automatically appear when signal exceeds threshold
-6. **Center on GPS** (View → Center on GPS) if you lose track of position
+6. **Centre on GPS** (View → Centre on GPS) if you lose track of position
 7. **Stop Session** when complete to save data
 
 ### Advanced Analysis
@@ -366,7 +366,7 @@ Processes loaded data and updates the map visualization.
 | Ctrl+S | Stop Session |
 | Ctrl+P | Session Pause (toggle) |
 | Ctrl+Q | Exit |
-| Ctrl+L | Center on GPS |
+| Ctrl+L | Centre on GPS |
 | Ctrl+R | Show RSSI Graph (toggle) |
 | Ctrl+A | Signal Analysis |
 
