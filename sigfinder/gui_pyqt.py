@@ -316,11 +316,32 @@ class MapWindow(QtWidgets.QMainWindow):
 
     def show_about(self):
         """Show about dialog"""
+        from sigfinder import __version__
         QtWidgets.QMessageBox.about(
             self, 'About SigFinder',
-            '<h3>SigFinder</h3>'
-            '<p>GPS-based signal strength mapping tool</p>'
-            '<p>Using ADALM-Pluto SDR</p>'
+            f'''<h2>SigFinder</h2>
+            <p><b>Version:</b> {__version__}</p>
+            <hr>
+            <p><b>Description:</b><br>
+            GPS-based signal strength mapping and analysis tool for radio frequency signal hunting.</p>
+            <p><b>Supported Hardware:</b></p>
+            <ul>
+            <li>ADALM-Pluto SDR</li>
+            <li>SDRplay (RSP series)</li>
+            <li>RTL-SDR</li>
+            </ul>
+            <p><b>Features:</b></p>
+            <ul>
+            <li>Real-time GPS tracking and signal mapping</li>
+            <li>Automatic triggered markers (50m spacing)</li>
+            <li>CSV logging with pause/resume</li>
+            <li>Advanced signal analysis and origin estimation</li>
+            <li>Multi-dataset comparison</li>
+            <li>Outlier detection and oscillation filtering</li>
+            </ul>
+            <hr>
+            <p><small>&copy; 2025 - Licensed under open source</small></p>
+            '''
         )
 
     def start_new_session(self):
