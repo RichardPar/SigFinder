@@ -1,0 +1,23 @@
+pyserial>=3.5
+
+# ADALM-Pluto SDR support
+# The latest compatible pyadi-iio available on PyPI in some environments
+# is 0.0.20. If you need a newer version, see README for alternatives.
+pyadi-iio==0.0.20
+
+# SDRplay, RTL-SDR, and other SoapySDR-compatible hardware
+# NOTE: SoapySDR Python bindings CANNOT be installed via pip!
+# They must be installed system-wide using your package manager.
+# After system installation, the venv will automatically find them.
+# For SDRplay: Install SDRplay API and SoapySDRPlay plugin (see README)
+# For RTL-SDR: Install rtl-sdr drivers and SoapyRTLSDR module (see README)
+# Debian/Ubuntu: sudo apt-get install python3-soapysdr soapysdr-tools libsoapysdr-dev rtl-sdr soapysdr-module-rtlsdr
+# Fedora/RHEL: sudo dnf install python3-SoapySDR SoapySDR SoapySDR-devel rtl-sdr soapy-sdr-rtlsdr
+
+pywebview>=3.6
+folium>=0.14
+qtpy>=2.3
+# PyQt6 versions compatible with Qt 6.4.2 (system Qt version)
+PyQt6==6.4.2
+PyQt6-WebEngine==6.4.0
+pytest>=7.0
