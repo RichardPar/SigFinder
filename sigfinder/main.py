@@ -881,16 +881,92 @@ def main():
     except Exception:
         pass
     # If we have an SDR device, start an RSSI sampler thread that updates current_status
-    # Create a holder for the RSSI logging callback that GUI will register
-    rssi_log_callback_holder = {'callback': None}
-    
-    def set_rssi_callback(callback):
-        rssi_log_callback_holder['callback'] = callback
-    
+    # Support multiple RSSI callbacks so logging can be independent of the GUI.
+    rssi_callbacks = []
+
+    def add_rssi_callback(callback):
+        """Register a callback to be called for each RSSI sample.
+
+        Callbacks will be invoked with a single argument: rssi_dbm (float).
+        """
+        try:
+            if callback and callable(callback):
+                rssi_callbacks.append(callback)
+        except Exception:
+            pass
+
+    def remove_rssi_callback(callback):
+        try:
+            if callback in rssi_callbacks:
+                rssi_callbacks.remove(callback)
+        except Exception:
+            pass
+
     def rssi_callback_wrapper(rssi_dbm):
-        if rssi_log_callback_holder['callback']:
-            rssi_log_callback_holder['callback'](rssi_dbm)
-    
+        # Invoke all registered callbacks safely
+        for cb in list(rssi_callbacks):
+            try:
+                cb(rssi_dbm)
+            except Exception as e:
+                print(f'RSSI callback error: {e}')
+
+    # Simple file-based logger that runs in the main process and does not depend on GUI
+    class FileLogger:
+        def __init__(self, directory=None, prefix='auto_log'):
+            import os, time, threading
+            self.dir = directory or os.getcwd()
+            self.lock = threading.Lock()
+            ts = time.strftime('%Y-%m-%d_%H-%M-%S')
+            self.filename = os.path.join(self.dir, f"{prefix}_{ts}.csv")
+            self.fh = None
+            self.paused = False
+            try:
+                os.makedirs(self.dir, exist_ok=True)
+                self.fh = open(self.filename, 'a', encoding='utf-8', newline='')
+                # Write header if file empty
+                try:
+                    if self.fh.tell() == 0:
+                        self.fh.write('Timestamp,Latitude,Longitude,Fix Quality,Num Satellites,RMC Status,RSSI (dBm)\n')
+                        self.fh.flush()
+                except Exception:
+                    pass
+                print(f'main: FileLogger created -> {self.filename}')
+            except Exception as e:
+                print(f'main: Failed to create FileLogger file: {e}')
+
+        def log(self, rssi_dbm):
+            if self.paused or self.fh is None:
+                return
+            try:
+                from datetime import datetime
+                # Use helper functions to fetch latest position/status
+                lat, lon = get_current_position()
+                st = get_status()
+                timestamp = datetime.utcnow().isoformat() + 'Z'
+                line = f"{timestamp},{lat if lat is not None else ''},{lon if lon is not None else ''},{st.get('fix_quality','')},{st.get('num_sats','')},{st.get('rmc_status','')},{rssi_dbm if rssi_dbm is not None else ''}\n"
+                with self.lock:
+                    self.fh.write(line)
+                    self.fh.flush()
+            except Exception as e:
+                print(f'main: FileLogger write error: {e}')
+
+        def close(self):
+            try:
+                if self.fh:
+                    self.fh.close()
+            except Exception:
+                pass
+
+        def pause(self):
+            self.paused = True
+
+        def resume(self):
+            self.paused = False
+
+    # Instantiate a background file logger so logging continues even if GUI/webview fails
+    file_logger = FileLogger()
+    add_rssi_callback(file_logger.log)
+
     if sdr_device is not None:
         try:
             start_rssi_sampler(sdr_device, stop_event, rssi_callback_wrapper)
@@ -919,7 +995,7 @@ def main():
             # Try to call the newer GUI signature including initial range and a config save callback
             try:
                 print(f"main: Calling {gui_module.__name__}.start_gui with rssi_callback_setter")
-                gui_module.start_gui(get_current_position, get_status, get_and_clear_signal_events, initial_range_default, config_save_callback=save_config, rssi_callback_setter=set_rssi_callback)
+                gui_module.start_gui(get_current_position, get_status, get_and_clear_signal_events, initial_range_default, config_save_callback=save_config, rssi_callback_setter=add_rssi_callback)
             except TypeError as te:
                 print(f"main: TypeError with rssi_callback_setter: {te}")
                 # Fallback without rssi_callback_setter
@@ -971,6 +1047,18 @@ def main():
                     del sdr_device
                 except Exception:
                     pass
+            # Close file logger if present
+            try:
+                if 'file_logger' in locals() and file_logger:
+                    file_logger.close()
+            except Exception:
+                pass
+            # Close file logger if present
+            try:
+                if 'file_logger' in locals() and file_logger:
+                    file_logger.close()
+            except Exception:
+                pass
     else:
         try:
             while True:
