@@ -97,6 +97,11 @@ class AnalysisWindow(QMainWindow):
         self.heatmap_radius = 25
         self.heatmap_opacity = 0.35
         self.heatmap_palette = 'Inferno'  # 'Inferno' | 'Viridis' | 'Yellow-Red'
+        # Secondary-origin tuning defaults (dB offsets and minimum weight floor)
+        self.secondary_lower_db = 40.0
+        self.secondary_upper_db = 8.0
+        # Slider will expose 0.01..1.00, store as float
+        self.secondary_min_weight = 0.1
         
         # Set initial file if provided
         if self.current_csv_file:
@@ -349,6 +354,8 @@ class AnalysisWindow(QMainWindow):
         palette_combo.currentTextChanged.connect(self.on_palette_changed)
         palette_combo.show(); palette_combo.raise_()
         self.dataset_checkbox_widgets.append(palette_combo)
+        
+        # (Secondary-origin tuning controls removed from UI)
         # Position all checkboxes
         self.position_checkboxes()
     
@@ -463,6 +470,7 @@ class AnalysisWindow(QMainWindow):
                 self.display_map_multi(visible_datasets, combined_origin)
         except Exception:
             pass
+        
         
     
     def analyze_csv(self, file_path, min_rssi):
@@ -800,14 +808,14 @@ class AnalysisWindow(QMainWindow):
                 return None
 
             max_rssi = max(rssi_vals)
-            # Weak band: between (max - 40) and (max - 8) dB
-            lower = max_rssi - 40.0
-            upper = max_rssi - 8.0
+            # Weak band: between (max - lower_db) and (max - upper_db) dB
+            lower = max_rssi - float(getattr(self, 'secondary_lower_db', 40.0))
+            upper = max_rssi - float(getattr(self, 'secondary_upper_db', 8.0))
             selected = [p for p in signal_points if lower <= p.get('rssi_max', p.get('rssi_avg', -999)) <= upper]
 
-            # If none found, try looser threshold (<= max-6)
+            # If none found, try looser threshold (<= max - upper_db)
             if not selected:
-                selected = [p for p in signal_points if p.get('rssi_max', p.get('rssi_avg', -999)) <= max_rssi - 6.0]
+                selected = [p for p in signal_points if p.get('rssi_max', p.get('rssi_avg', -999)) <= max_rssi - float(getattr(self, 'secondary_upper_db', 8.0))]
             if not selected:
                 return None
 
@@ -819,7 +827,73 @@ class AnalysisWindow(QMainWindow):
             w_sum = 0.0
             for p in selected:
                 r = p.get('rssi_max', p.get('rssi_avg', -999))
-                w = max(0.1, (r - min_sel) + 1.0)
+                # Weight floor is configurable (0.01..1.0). Default 0.1
+                min_w = float(getattr(self, 'secondary_min_weight', 0.1))
+                w = max(min_w, (r - min_sel) + 1.0)
+                lat_sum += p['lat'] * w
+                lon_sum += p['lon'] * w
+                w_sum += w
+
+            if w_sum <= 0:
+                return None
+
+            center_lat = lat_sum / w_sum
+            center_lon = lon_sum / w_sum
+
+            northmost = max(selected, key=lambda pp: pp['lat'])
+            southmost = min(selected, key=lambda pp: pp['lat'])
+            eastmost = max(selected, key=lambda pp: pp['lon'])
+            westmost = min(selected, key=lambda pp: pp['lon'])
+            ns_span = northmost['lat'] - southmost['lat']
+            ew_span = eastmost['lon'] - westmost['lon']
+
+            return {
+                'lat': center_lat,
+                'lon': center_lon,
+                'ns_span': ns_span,
+                'ew_span': ew_span,
+                'confidence': w_sum
+            }
+        except Exception:
+            return None
+
+    def estimate_signal_origin_secondary_params(self, signal_points, lower_db, upper_db, min_weight):
+        """Variant of secondary estimator that accepts explicit parameters.
+
+        This mirrors `estimate_signal_origin_secondary` but uses the provided
+        numeric parameters instead of reading `self.*` attributes. It is used
+        to compute a series of secondary origins while sweeping the lower_db
+        value for visualization (polyline).
+        """
+        if not signal_points:
+            return None
+
+        try:
+            rssi_vals = [p.get('rssi_max', p.get('rssi_avg', None)) for p in signal_points]
+            rssi_vals = [v for v in rssi_vals if v is not None]
+            if not rssi_vals:
+                return None
+
+            max_rssi = max(rssi_vals)
+            lower = max_rssi - float(lower_db)
+            upper = max_rssi - float(upper_db)
+            selected = [p for p in signal_points if lower <= p.get('rssi_max', p.get('rssi_avg', -999)) <= upper]
+
+            # If none found, fallback to looser threshold using upper_db
+            if not selected:
+                selected = [p for p in signal_points if p.get('rssi_max', p.get('rssi_avg', -999)) <= max_rssi - float(upper_db)]
+            if not selected:
+                return None
+
+            sel_rssis = [p.get('rssi_max', p.get('rssi_avg', -999)) for p in selected]
+            min_sel = min(sel_rssis)
+
+            lat_sum = 0.0
+            lon_sum = 0.0
+            w_sum = 0.0
+            for p in selected:
+                r = p.get('rssi_max', p.get('rssi_avg', -999))
+                w = max(float(min_weight), (r - min_sel) + 1.0)
                 lat_sum += p['lat'] * w
                 lon_sum += p['lon'] * w
                 w_sum += w
@@ -943,10 +1017,21 @@ class AnalysisWindow(QMainWindow):
         except Exception:
             # Fail silently; secondary origin is optional
             pass
+        # Build a swept secondary-origin path: vary lower_db from 0..60 (step 5), keep upper_db=0
+        secondary_sweep = []
+        try:
+            sweep_step = 5
+            for lower_db in range(0, 61, sweep_step):
+                pt = self.estimate_signal_origin_secondary_params(all_points, lower_db, 0, getattr(self, 'secondary_min_weight', 0.1))
+                if pt:
+                    secondary_sweep.append({'lat': pt['lat'], 'lon': pt['lon'], 'lower': int(lower_db)})
+        except Exception:
+            secondary_sweep = []
         
         import json
         signal_points_str = json.dumps(signal_points_json)
         origins_str = json.dumps(origins_json)
+        secondary_sweep_str = json.dumps(secondary_sweep)
         # Prepare leaflet.heat data if available
         heat_data_js = ''
         if self.show_heatmap and self.heatmap_points:
@@ -1099,12 +1184,28 @@ class AnalysisWindow(QMainWindow):
                     );
                 }});
                 
+                // Draw secondary-origin sweep polyline (lower_db 0->60, upper_db=0)
+                var secondarySweep = {secondary_sweep_str};
+                if (secondarySweep && secondarySweep.length > 0) {{
+                    var sweepLatLngs = secondarySweep.map(function(p) {{ return [p.lat, p.lon]; }});
+                    var sweepLine = L.polyline(sweepLatLngs, {{color: '#0000FF', weight: 3, dashArray: '6,6', opacity: 0.8}}).addTo(map);
+                    // Add small markers with popup indicating the lower dB used
+                    secondarySweep.forEach(function(p) {{
+                        var m = L.circleMarker([p.lat, p.lon], {{radius:4, color:'#0000FF', fillColor:'#FFFFFF', fillOpacity:1, weight:1}}).addTo(map);
+                        m.bindPopup('Secondary lower ΔdB: ' + p.lower + ' dB');
+                    }});
+                }}
+                
                 // Fit map to show all points and origins
                 if (points.length > 0) {{
                     var bounds = L.latLngBounds(points.map(p => [p.lat, p.lon]));
                     origins.forEach(function(origin) {{
                         bounds.extend([origin.lat, origin.lon]);
                     }});
+                    // Include secondary sweep in bounds if present
+                    if (typeof secondarySweep !== 'undefined' && secondarySweep && secondarySweep.length > 0) {{
+                        secondarySweep.forEach(function(p) {{ bounds.extend([p.lat, p.lon]); }});
+                    }}
                     map.fitBounds(bounds, {{ padding: [50, 50] }});
                 }}
                 
