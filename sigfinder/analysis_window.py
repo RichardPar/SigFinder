@@ -783,6 +783,69 @@ class AnalysisWindow(QMainWindow):
             'ew_span': ew_span,
             'confidence': len(strong_signals)
         }
+
+    def estimate_signal_origin_secondary(self, signal_points):
+        """Estimate an origin from non-strongest (weaker) points.
+
+        Select points that are noticeably weaker than the max (but not extremely weak)
+        and compute a weighted centroid among that subset.
+        """
+        if not signal_points:
+            return None
+
+        try:
+            rssi_vals = [p.get('rssi_max', p.get('rssi_avg', None)) for p in signal_points]
+            rssi_vals = [v for v in rssi_vals if v is not None]
+            if not rssi_vals:
+                return None
+
+            max_rssi = max(rssi_vals)
+            # Weak band: between (max - 40) and (max - 8) dB
+            lower = max_rssi - 40.0
+            upper = max_rssi - 8.0
+            selected = [p for p in signal_points if lower <= p.get('rssi_max', p.get('rssi_avg', -999)) <= upper]
+
+            # If none found, try looser threshold (<= max-6)
+            if not selected:
+                selected = [p for p in signal_points if p.get('rssi_max', p.get('rssi_avg', -999)) <= max_rssi - 6.0]
+            if not selected:
+                return None
+
+            sel_rssis = [p.get('rssi_max', p.get('rssi_avg', -999)) for p in selected]
+            min_sel = min(sel_rssis)
+
+            lat_sum = 0.0
+            lon_sum = 0.0
+            w_sum = 0.0
+            for p in selected:
+                r = p.get('rssi_max', p.get('rssi_avg', -999))
+                w = max(0.1, (r - min_sel) + 1.0)
+                lat_sum += p['lat'] * w
+                lon_sum += p['lon'] * w
+                w_sum += w
+
+            if w_sum <= 0:
+                return None
+
+            center_lat = lat_sum / w_sum
+            center_lon = lon_sum / w_sum
+
+            northmost = max(selected, key=lambda pp: pp['lat'])
+            southmost = min(selected, key=lambda pp: pp['lat'])
+            eastmost = max(selected, key=lambda pp: pp['lon'])
+            westmost = min(selected, key=lambda pp: pp['lon'])
+            ns_span = northmost['lat'] - southmost['lat']
+            ew_span = eastmost['lon'] - westmost['lon']
+
+            return {
+                'lat': center_lat,
+                'lon': center_lon,
+                'ns_span': ns_span,
+                'ew_span': ew_span,
+                'confidence': w_sum
+            }
+        except Exception:
+            return None
     
     def calculate_color(self, rssi_above_threshold):
         """
@@ -864,6 +927,22 @@ class AnalysisWindow(QMainWindow):
                 'name': 'Combined',
                 'type': 'combined'
             })
+
+        # Add secondary origin (estimator using weaker points) if available
+        try:
+            secondary_origin = self.estimate_signal_origin_secondary(all_points)
+            if secondary_origin:
+                origins_json.append({
+                    'lat': secondary_origin['lat'],
+                    'lon': secondary_origin['lon'],
+                    'confidence': secondary_origin.get('confidence', 0),
+                    'color': '#0000FF',
+                    'name': 'Secondary',
+                    'type': 'secondary'
+                })
+        except Exception:
+            # Fail silently; secondary origin is optional
+            pass
         
         import json
         signal_points_str = json.dumps(signal_points_json)
@@ -914,7 +993,9 @@ class AnalysisWindow(QMainWindow):
             <div id="map"></div>
             <script>
                 var map = L.map('map').setView([{center_lat}, {center_lon}], 16);
-                
+                // Ensure map size is calculated correctly in Qt WebEngine
+                setTimeout(function() {{ try {{ map.invalidateSize(); }} catch(e) {{ /* ignore */ }} }}, 200);
+
                 L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
                     attribution: '© OpenStreetMap contributors',
                     maxZoom: 19
@@ -975,13 +1056,33 @@ class AnalysisWindow(QMainWindow):
                         );
                     }}
                     
-                    var iconSvg = origin.type === 'combined' 
-                        ? '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="12" fill="#8B0000" stroke="white" stroke-width="3"/><circle cx="20" cy="20" r="5" fill="white"/><circle cx="20" cy="20" r="2" fill="#8B0000"/></svg>'
-                        : '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="8" fill="' + origin.color + '" stroke="white" stroke-width="2"/><circle cx="16" cy="16" r="3" fill="white"/></svg>';
-                    
-                    var iconSize = origin.type === 'combined' ? [40, 40] : [32, 32];
-                    var iconAnchor = origin.type === 'combined' ? [20, 20] : [16, 16];
-                    
+                    var iconSvg = '';
+                    var iconSize = [32, 32];
+                    var iconAnchor = [16, 16];
+                    if (origin.type === 'combined') {{
+                        iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">'
+                                + '<circle cx="20" cy="20" r="12" fill="#8B0000" stroke="white" stroke-width="3"/>'
+                                + '<circle cx="20" cy="20" r="5" fill="white"/>'
+                                + '<circle cx="20" cy="20" r="2" fill="#8B0000"/>'
+                                + '</svg>';
+                        iconSize = [40, 40];
+                        iconAnchor = [20, 20];
+                    }} else if (origin.type === 'secondary') {{
+                        // Blue square for secondary origin
+                        iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">'
+                                + '<rect x="4" y="4" width="24" height="24" fill="' + origin.color + '" stroke="white" stroke-width="2"/>'
+                                + '</svg>';
+                        iconSize = [32, 32];
+                        iconAnchor = [16, 16];
+                    }} else {{
+                        // Individual dataset origin (colored circle)
+                        var c = origin.color || '#00AA00';
+                        iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">'
+                                + '<circle cx="16" cy="16" r="8" fill="' + c + '" stroke="white" stroke-width="2"/>'
+                                + '<circle cx="16" cy="16" r="3" fill="white"/>'
+                                + '</svg>';
+                    }}
+
                     var originIcon = L.icon({{
                         iconUrl: 'data:image/svg+xml;base64,' + btoa(iconSvg),
                         iconSize: iconSize,
