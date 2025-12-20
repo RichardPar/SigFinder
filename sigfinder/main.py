@@ -963,15 +963,26 @@ def main():
         def resume(self):
             self.paused = False
 
-    # Instantiate a background file logger so logging continues even if GUI/webview fails
-    file_logger = FileLogger()
-    add_rssi_callback(file_logger.log)
+    # Do NOT auto-start file logging if GUI is enabled; file logging will be
+    # started automatically only when running without GUI, or when the GUI
+    # user explicitly starts a session (GUI will register its callback).
+    file_logger = None
 
     if sdr_device is not None:
         try:
             start_rssi_sampler(sdr_device, stop_event, rssi_callback_wrapper)
         except Exception as e:
             print('Failed to start RSSI sampler:', e)
+
+    # If running without GUI, automatically create and register the FileLogger so
+    # logging continues even when no GUI is present. If GUI is enabled, the GUI
+    # will register its own logging callback when the user starts a session.
+    try:
+        if not args.gui:
+            file_logger = FileLogger()
+            add_rssi_callback(file_logger.log)
+    except Exception as e:
+        print(f'main: Failed to create auto FileLogger: {e}')
 
     if args.gui:
         # Prefer PyQt GUI if available, otherwise fall back to webview GUI
@@ -995,7 +1006,7 @@ def main():
             # Try to call the newer GUI signature including initial range and a config save callback
             try:
                 print(f"main: Calling {gui_module.__name__}.start_gui with rssi_callback_setter")
-                gui_module.start_gui(get_current_position, get_status, get_and_clear_signal_events, initial_range_default, config_save_callback=save_config, rssi_callback_setter=add_rssi_callback)
+                gui_module.start_gui(get_current_position, get_status, get_and_clear_signal_events, initial_range_default, config_save_callback=save_config, rssi_callback_setter=add_rssi_callback, rssi_callback_remover=remove_rssi_callback)
             except TypeError as te:
                 print(f"main: TypeError with rssi_callback_setter: {te}")
                 # Fallback without rssi_callback_setter

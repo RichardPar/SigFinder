@@ -67,6 +67,10 @@ class MapWindow(QtWidgets.QMainWindow):
         self.triggered_markers = []  # List of (lat, lon) tuples
         self.range_trigger_value = initial_range_default  # Current RSSI trigger threshold
         self.last_triggered_state = False  # Track if we were in triggered state
+        # RSSI callback registration (set by start_gui if provided)
+        self.rssi_callback_setter = None
+        self.rssi_callback_remover = None
+        self._rssi_registered = False
 
         # Create menu bar
         menubar = self.menuBar()
@@ -389,6 +393,13 @@ class MapWindow(QtWidgets.QMainWindow):
             self.pause_session_action.setEnabled(True)  # Enable pause checkbox
             self.pause_session_action.setChecked(False)  # Default to not paused
             self.session_paused = False
+            # Register GUI RSSI callback with main if setter provided (only when session starts)
+            try:
+                if hasattr(self, 'rssi_callback_setter') and self.rssi_callback_setter:
+                    self.rssi_callback_setter(self.log_rssi_sample)
+                    self._rssi_registered = True
+            except Exception as e:
+                print(f'qt-gui: Failed to register RSSI callback with main: {e}')
             QtWidgets.QMessageBox.information(
                 self, 'Session Started',
                 f'Logging to: {os.path.basename(file_path)}'
@@ -414,6 +425,13 @@ class MapWindow(QtWidgets.QMainWindow):
             self.pause_session_action.setChecked(False)
             self.session_paused = False
             self.setWindowTitle('SigFinder Map (Qt)')
+            # Unregister GUI RSSI callback from main if previously registered
+            try:
+                if getattr(self, '_rssi_registered', False) and getattr(self, 'rssi_callback_remover', None):
+                    self.rssi_callback_remover(self.log_rssi_sample)
+                    self._rssi_registered = False
+            except Exception as e:
+                print(f'qt-gui: Failed to unregister RSSI callback from main: {e}')
             QtWidgets.QMessageBox.information(
                 self, 'Session Stopped',
                 'Logging session stopped successfully.'
@@ -628,7 +646,7 @@ class GraphWindow(QtWidgets.QMainWindow):
             pass
 
 
-def start_gui(get_position_callable, get_status_callable=None, get_signal_events_callable=None, initial_range_default=-110.0, config_save_callback=None, rssi_callback_setter=None):
+def start_gui(get_position_callable, get_status_callable=None, get_signal_events_callable=None, initial_range_default=-110.0, config_save_callback=None, rssi_callback_setter=None, rssi_callback_remover=None):
     print("qt-gui: starting PyQt GUI")
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     
@@ -642,10 +660,10 @@ def start_gui(get_position_callable, get_status_callable=None, get_signal_events
     timer.start(100)  # Check every 100ms
     
     win = MapWindow(get_position_callable, get_status_callable, initial_range_default)
-    
-    # Register RSSI logging callback with main thread if setter provided
-    if rssi_callback_setter:
-        rssi_callback_setter(win.log_rssi_sample)
+
+    # Store RSSI callback setter/remover on the window so session controls can register/unregister
+    win.rssi_callback_setter = rssi_callback_setter
+    win.rssi_callback_remover = rssi_callback_remover
     
     win.show()
     # show graph window if HTML_GRAPH_TEMPLATE is available

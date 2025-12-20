@@ -4,9 +4,11 @@ Analysis Window - Visualize signal data from CSV logs
 import csv
 import os
 from datetime import datetime
+import math
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QLabel, QLineEdit, QFileDialog, QMessageBox, QInputDialog
+    QPushButton, QLabel, QLineEdit, QFileDialog, QMessageBox, QInputDialog,
+    QSlider, QComboBox
 )
 from PyQt6.QtGui import QAction
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -88,6 +90,13 @@ class AnalysisWindow(QMainWindow):
         # Store current signal points and origin for updates
         self.current_signal_points = None
         self.current_origin = None
+        # Heatmap state (safe canvas-based heat layer)
+        self.show_heatmap = False
+        self.heatmap_points = None
+        # Heatmap UI defaults
+        self.heatmap_radius = 25
+        self.heatmap_opacity = 0.35
+        self.heatmap_palette = 'Inferno'  # 'Inferno' | 'Viridis' | 'Yellow-Red'
         
         # Set initial file if provided
         if self.current_csv_file:
@@ -199,7 +208,10 @@ class AnalysisWindow(QMainWindow):
         # Store signal points and datasets for re-estimation
         self.current_signal_points = all_signal_points
         self.file_datasets = file_datasets
-        
+
+        # Precompute simple heatmap points (aggregated) for fast rendering
+        self.heatmap_points = self.compute_heatmap_points(all_signal_points)
+
         # Update dataset selection checkboxes
         self.update_dataset_checkboxes()
         
@@ -277,6 +289,66 @@ class AnalysisWindow(QMainWindow):
         self.dataset_checkbox_widgets.append(combined_cb)
         self.dataset_checkboxes.append(combined_cb)
         
+        # Add heatmap toggle (canvas-based heat layer)
+        heatmap_cb = QCheckBox("Show Heatmap", self.web_view)
+        heatmap_cb.setChecked(self.show_heatmap)
+        heatmap_cb.setStyleSheet("""
+            QCheckBox {
+                background-color: rgba(255, 255, 255, 220);
+                color: #333333;
+                font-weight: bold;
+                padding: 8px 12px;
+                border-radius: 4px;
+                border: 2px solid #444444;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+            }
+        """)
+        heatmap_cb.stateChanged.connect(lambda s: self.toggle_heatmap(2 if s else 0))
+        heatmap_cb.show()
+        heatmap_cb.raise_()
+        self.dataset_checkbox_widgets.append(heatmap_cb)
+        # Do not add to dataset_checkboxes (it's a control, not a dataset)
+        
+        # Radius slider
+        radius_label = QLabel(f"Heat Radius: {self.heatmap_radius}px", self.web_view)
+        radius_label.setStyleSheet("background: rgba(255,255,255,220); padding:4px; border-radius:4px; font-weight:bold;")
+        radius_label.show(); radius_label.raise_()
+        radius_slider = QSlider(Qt.Orientation.Horizontal, self.web_view)
+        radius_slider.setMinimum(5)
+        radius_slider.setMaximum(100)
+        radius_slider.setValue(self.heatmap_radius)
+        radius_slider.setFixedWidth(180)
+        radius_slider.valueChanged.connect(lambda v: self.on_radius_changed(v, radius_label))
+        radius_slider.show(); radius_slider.raise_()
+        self.dataset_checkbox_widgets.append(radius_label)
+        self.dataset_checkbox_widgets.append(radius_slider)
+
+        # Opacity slider
+        opacity_label = QLabel(f"Heat Opacity: {int(self.heatmap_opacity*100)}%", self.web_view)
+        opacity_label.setStyleSheet("background: rgba(255,255,255,220); padding:4px; border-radius:4px; font-weight:bold;")
+        opacity_label.show(); opacity_label.raise_()
+        opacity_slider = QSlider(Qt.Orientation.Horizontal, self.web_view)
+        opacity_slider.setMinimum(10)
+        opacity_slider.setMaximum(100)
+        opacity_slider.setValue(int(self.heatmap_opacity*100))
+        opacity_slider.setFixedWidth(180)
+        opacity_slider.valueChanged.connect(lambda v: self.on_opacity_changed(v, opacity_label))
+        opacity_slider.show(); opacity_slider.raise_()
+        self.dataset_checkbox_widgets.append(opacity_label)
+        self.dataset_checkbox_widgets.append(opacity_slider)
+
+        # Palette dropdown
+        palette_combo = QComboBox(self.web_view)
+        palette_combo.addItems(['Inferno', 'Viridis', 'Yellow-Red'])
+        idx = {'Inferno':0,'Viridis':1,'Yellow-Red':2}.get(self.heatmap_palette, 0)
+        palette_combo.setCurrentIndex(idx)
+        palette_combo.setFixedWidth(160)
+        palette_combo.currentTextChanged.connect(self.on_palette_changed)
+        palette_combo.show(); palette_combo.raise_()
+        self.dataset_checkbox_widgets.append(palette_combo)
         # Position all checkboxes
         self.position_checkboxes()
     
@@ -314,7 +386,8 @@ class AnalysisWindow(QMainWindow):
             all_visible_points = []
             for dataset in visible_datasets:
                 all_visible_points.extend(dataset['points'])
-            
+            # Recompute heat points for the visible subset
+            self.heatmap_points = self.compute_heatmap_points(all_visible_points)
             combined_origin = self.estimate_signal_origin(all_visible_points) if show_combined else None
             if combined_origin:
                 combined_origin['dataset_id'] = -1
@@ -323,6 +396,74 @@ class AnalysisWindow(QMainWindow):
             
             # Redraw map with only visible datasets
             self.display_map_multi(visible_datasets, combined_origin if show_combined else None)
+
+    def on_radius_changed(self, value, label_widget):
+        try:
+            self.heatmap_radius = int(value)
+            label_widget.setText(f"Heat Radius: {self.heatmap_radius}px")
+            if self.show_heatmap:
+                # Re-render map to apply new radius
+                visible_datasets = []
+                for idx, dataset in enumerate(self.file_datasets):
+                    if self.dataset_checkboxes[idx].isChecked():
+                        visible_datasets.append(dataset)
+                show_combined = True
+                if len(self.dataset_checkboxes) > len(self.file_datasets):
+                    show_combined = self.dataset_checkboxes[-1].isChecked()
+                combined_origin = None
+                if visible_datasets and show_combined:
+                    all_visible_points = []
+                    for dataset in visible_datasets:
+                        all_visible_points.extend(dataset['points'])
+                    combined_origin = self.estimate_signal_origin(all_visible_points)
+                self.display_map_multi(visible_datasets, combined_origin)
+        except Exception:
+            pass
+
+    def on_opacity_changed(self, value, label_widget):
+        try:
+            self.heatmap_opacity = max(0.01, min(1.0, float(value) / 100.0))
+            label_widget.setText(f"Heat Opacity: {int(self.heatmap_opacity*100)}%")
+            if self.show_heatmap:
+                # Re-render map to apply new opacity
+                visible_datasets = []
+                for idx, dataset in enumerate(self.file_datasets):
+                    if self.dataset_checkboxes[idx].isChecked():
+                        visible_datasets.append(dataset)
+                show_combined = True
+                if len(self.dataset_checkboxes) > len(self.file_datasets):
+                    show_combined = self.dataset_checkboxes[-1].isChecked()
+                combined_origin = None
+                if visible_datasets and show_combined:
+                    all_visible_points = []
+                    for dataset in visible_datasets:
+                        all_visible_points.extend(dataset['points'])
+                    combined_origin = self.estimate_signal_origin(all_visible_points)
+                self.display_map_multi(visible_datasets, combined_origin)
+        except Exception:
+            pass
+
+    def on_palette_changed(self, text):
+        try:
+            self.heatmap_palette = text
+            if self.show_heatmap:
+                visible_datasets = []
+                for idx, dataset in enumerate(self.file_datasets):
+                    if self.dataset_checkboxes[idx].isChecked():
+                        visible_datasets.append(dataset)
+                show_combined = True
+                if len(self.dataset_checkboxes) > len(self.file_datasets):
+                    show_combined = self.dataset_checkboxes[-1].isChecked()
+                combined_origin = None
+                if visible_datasets and show_combined:
+                    all_visible_points = []
+                    for dataset in visible_datasets:
+                        all_visible_points.extend(dataset['points'])
+                    combined_origin = self.estimate_signal_origin(all_visible_points)
+                self.display_map_multi(visible_datasets, combined_origin)
+        except Exception:
+            pass
+        
     
     def analyze_csv(self, file_path, min_rssi):
         """
@@ -468,6 +609,75 @@ class AnalysisWindow(QMainWindow):
             })
         
         return signal_points
+
+    def compute_heatmap_grid(self, points):
+        # Deprecated placeholder kept for compatibility; new heatmap uses compute_heatmap_points
+        return []
+
+    def compute_heatmap_points(self, points):
+        """Aggregate points into a list of [lat, lon, intensity] suitable for leaflet.heat.
+
+        This uses a simple spatial binning (WebMercator 100m grid) and produces
+        one sample point per cell with an intensity normalized by count and strength.
+        """
+        if not points:
+            return []
+
+        # Helpers to convert lon/lat to WebMercator meters and back
+        def lonlat_to_meters(lon, lat):
+            origin_shift = 2 * math.pi * 6378137 / 2.0
+            mx = lon * origin_shift / 180.0
+            my = math.log(math.tan((90 + lat) * math.pi / 360.0))
+            my = my * origin_shift / math.pi
+            return mx, my
+
+        def meters_to_lonlat(mx, my):
+            origin_shift = 2 * math.pi * 6378137 / 2.0
+            lon = (mx / origin_shift) * 180.0
+            lat = (my / origin_shift) * 180.0
+            lat = 180 / math.pi * (2 * math.atan(math.exp(lat * math.pi / 180.0)) - math.pi / 2.0)
+            return lon, lat
+
+        cell_size_m = 100.0
+        grid = {}
+        for p in points:
+            lat = p['lat']
+            lon = p['lon']
+            strength = float(p.get('rssi_avg', p.get('rssi_max', 0)))
+            mx, my = lonlat_to_meters(lon, lat)
+            gx = int(math.floor(mx / cell_size_m))
+            gy = int(math.floor(my / cell_size_m))
+            key = (gx, gy)
+            if key not in grid:
+                grid[key] = {'mx': mx, 'my': my, 'count': 1, 'strength_sum': strength}
+            else:
+                g = grid[key]
+                g['mx'] += mx
+                g['my'] += my
+                g['count'] += 1
+                g['strength_sum'] += strength
+
+        # Build heat points (lat, lon, intensity)
+        heat_points = []
+        strengths = [g['strength_sum'] / g['count'] for g in grid.values()]
+        min_s, max_s = (min(strengths), max(strengths)) if strengths else (0.0, 1.0)
+
+        def norm(v, vmin, vmax):
+            if vmax <= vmin:
+                return 0.0
+            return (v - vmin) / (vmax - vmin)
+
+        for key, g in grid.items():
+            avg_mx = g['mx'] / g['count']
+            avg_my = g['my'] / g['count']
+            lon_c, lat_c = meters_to_lonlat(avg_mx, avg_my)
+            avg_strength = g['strength_sum'] / g['count']
+            intensity = norm(avg_strength, min_s, max_s)
+            # boost intensity slightly by count
+            intensity = min(1.0, intensity * 0.7 + 0.3 * norm(g['count'], 1, max(g['count'], 1)))
+            heat_points.append([lat_c, lon_c, intensity])
+
+        return heat_points
     
     def remove_outliers(self, values):
         """
@@ -658,6 +868,33 @@ class AnalysisWindow(QMainWindow):
         import json
         signal_points_str = json.dumps(signal_points_json)
         origins_str = json.dumps(origins_json)
+        # Prepare leaflet.heat data if available
+        heat_data_js = ''
+        if self.show_heatmap and self.heatmap_points:
+            # heatmap expects [lat, lon, intensity]
+            heat_js_array = json.dumps(self.heatmap_points)
+            # Prepare gradient maps (simple approximations)
+            gradients = {
+                'Inferno': {
+                    0.0: '#000004', 0.25: '#3b0f70', 0.5: '#cc4778', 0.75: '#f89441', 1.0: '#fcffa4'
+                },
+                'Viridis': {
+                    0.0: '#440154', 0.25: '#31688e', 0.5: '#35b779', 0.75: '#fde725', 1.0: '#fde725'
+                },
+                'Yellow-Red': {
+                    0.0: '#FFFF66', 0.5: '#FFA500', 1.0: '#FF4500'
+                }
+            }
+            sel_grad = gradients.get(self.heatmap_palette, gradients['Inferno'])
+            # JSON-encode gradient for JS (object with numeric keys)
+            grad_items = []
+            for k, v in sel_grad.items():
+                grad_items.append(f"{k}: '{v}'")
+            grad_js = '{' + ','.join(grad_items) + '}'
+            radius = int(self.heatmap_radius)
+            blur = max(1, int(radius * 0.6))
+            opacity = float(self.heatmap_opacity)
+            heat_data_js = f"\n                var heatData = {heat_js_array};\n                var heatDataScaled = heatData.map(function(p) {{ return [p[0], p[1], Math.min(1.0, p[2]*{opacity})]; }});\n                var heat = L.heatLayer(heatDataScaled, {{radius: {radius}, blur: {blur}, gradient: {grad_js}, maxZoom: 17, max: 1.0}}).addTo(map);\n"
         
         # Generate HTML with Leaflet map
         html = f"""
@@ -682,6 +919,18 @@ class AnalysisWindow(QMainWindow):
                     attribution: '© OpenStreetMap contributors',
                     maxZoom: 19
                 }}).addTo(map);
+                
+                // Include heat layer if requested (leaflet.heat)
+                (function() {{
+                    var script = document.createElement('script');
+                    script.src = 'https://unpkg.com/leaflet.heat/dist/leaflet-heat.js';
+                    script.onload = function() {{
+                        try {{
+                            {heat_data_js}
+                        }} catch(e) {{ console.log('heat init error', e); }}
+                    }};
+                    document.head.appendChild(script);
+                }})();
                 
                 // Add signal points with signal strength colors
                 var points = {signal_points_str};
@@ -757,6 +1006,7 @@ class AnalysisWindow(QMainWindow):
                     }});
                     map.fitBounds(bounds, {{ padding: [50, 50] }});
                 }}
+                
             </script>
         </body>
         </html>
@@ -765,6 +1015,28 @@ class AnalysisWindow(QMainWindow):
         self.web_view.setHtml(html)
         for widget in self.dataset_checkbox_widgets:
             widget.raise_()
+
+    def toggle_heatmap(self, state):
+        """Toggle heatmap on/off and re-render map."""
+        self.show_heatmap = (state == 2)
+        # Re-render current visible datasets
+        visible_datasets = []
+        for idx, dataset in enumerate(self.file_datasets):
+            if self.dataset_checkboxes[idx].isChecked():
+                visible_datasets.append(dataset)
+
+        show_combined = True
+        if len(self.dataset_checkboxes) > len(self.file_datasets):
+            show_combined = self.dataset_checkboxes[-1].isChecked()
+
+        combined_origin = None
+        if visible_datasets and show_combined:
+            all_visible_points = []
+            for dataset in visible_datasets:
+                all_visible_points.extend(dataset['points'])
+            combined_origin = self.estimate_signal_origin(all_visible_points)
+
+        self.display_map_multi(visible_datasets, combined_origin)
     
     def display_map(self, signal_points, origin=None):
         """Generate HTML map with signal visualization and estimated origin"""
