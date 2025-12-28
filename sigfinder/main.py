@@ -982,22 +982,18 @@ def main():
 
     if gps_port_val:
         try:
-            # Ensure path exists and looks like a character device on Unix
-            try:
-                st = os.stat(gps_port_val)
-                import stat as _stat
-                if not _stat.S_ISCHR(st.st_mode):
-                    print(f"GPS: port {gps_port_val} is not a character device; skipping GPS reader")
-                    gps_port_val = None
-            except FileNotFoundError:
+            # Treat missing device files as 'no GPS' but otherwise attempt to
+            # start the GPS reader and let the reader handle open errors.
+            # This is less strict than requiring a character device, and
+            # avoids skipping valid ports that may not show as S_ISCHR
+            # in some container or udev setups.
+            if not os.path.exists(gps_port_val):
                 print(f"GPS: port {gps_port_val} does not exist; skipping GPS reader")
                 gps_port_val = None
-            except Exception:
-                # If stat fails for any reason, fall back to attempting to open
-                # the port in the thread where import errors are handled.
-                pass
         except Exception:
-            gps_port_val = None
+            # If any unexpected error occurs checking the path, attempt to
+            # start the GPS reader and let it report the failure.
+            pass
 
     if gps_port_val:
         try:
