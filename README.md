@@ -93,6 +93,23 @@ SoapySDRUtil --find="driver=rtlsdr"
 rtl_test -t
 ```
 
+Native RTL-SDR Python backend (recommended)
+------------------------------------------------
+This project now supports a native RTL-SDR Python backend using `pyrtlsdr` (the `rtlsdr` package) which avoids the SoapySDR layer. When available the application will prefer `pyrtlsdr` and fall back to SoapySDR if it's not installed.
+
+To use the native backend inside the project's virtual environment:
+
+```bash
+. .venv/bin/activate
+pip install pyrtlsdr numpy setuptools
+```
+
+Notes:
+- `pyrtlsdr` provides direct RTL-SDR access and generally works better for some RTL2832U dongles than SoapySDR/SoapyRTLSDR.
+- `setuptools` is required at runtime for `pyrtlsdr` to provide `pkg_resources`.
+- If `pyrtlsdr` is not installed the app will attempt to use SoapySDR as before.
+
+
 ### 3. Create Python Virtual Environment
 
 ```bash

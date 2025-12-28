@@ -14,6 +14,12 @@ pyadi-iio==0.0.20
 # Debian/Ubuntu: sudo apt-get install python3-soapysdr soapysdr-tools libsoapysdr-dev rtl-sdr soapysdr-module-rtlsdr
 # Fedora/RHEL: sudo dnf install python3-SoapySDR SoapySDR SoapySDR-devel rtl-sdr soapy-sdr-rtlsdr
 
+# Optional native RTL-SDR Python backend (recommended)
+# The project prefers a native `pyrtlsdr` backend when available. Install
+# into the virtualenv to use it (otherwise the app falls back to SoapySDR):
+# pip install pyrtlsdr numpy setuptools
+pyrtlsdr>=0.3.0
+numpy>=1.24
 pywebview>=3.6
 folium>=0.14
 qtpy>=2.3

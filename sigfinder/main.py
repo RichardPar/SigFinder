@@ -298,42 +298,184 @@ def configure_rtlsdr(freq_hz: int, rx_bw_hz: int = 125000, gain: float = 40.0):
     Returns:
         SoapySDR device object or None on failure
     """
-    if SoapySDR is None:
-        print("SoapySDR not installed. Install SoapySDR Python bindings and retry.")
-        return None
-    
+    # Prefer native pyrtlsdr (rtlsdr.RtlSdr) if available; fall back to SoapySDR
     try:
-        # Find RTL-SDR devices
+        from rtlsdr import RtlSdr
+    except Exception:
+        RtlSdr = None
+
+    # Native pyrtlsdr backend
+    if RtlSdr is not None:
+        try:
+            import numpy as _np
+
+            class _RtlSdrWrapper:
+                """Lightweight wrapper around pyrtlsdr.RtlSdr exposing a minimal
+                readStream/deactivateStream/closeStream API used elsewhere in the
+                code. This allows `_sample_rssi_from_device()` to treat the
+                device similarly to SoapySDR devices.
+                """
+                def __init__(self):
+                    self._s = RtlSdr()
+                    # default sample rate: use 2 MHz for RTL-SDR
+                    try:
+                        self._s.sample_rate = 2e6
+                    except Exception:
+                        pass
+                    self._device_type = 'rtlsdr'
+                    # dummy stream token
+                    self._rx_stream = object()
+
+                # Provide convenience attributes expected by code
+                def set_sample_rate(self, sr):
+                    try:
+                        self._s.sample_rate = float(sr)
+                    except Exception:
+                        pass
+
+                def set_center_freq(self, freq_hz):
+                    try:
+                        self._s.center_freq = float(freq_hz)
+                    except Exception:
+                        try:
+                            self._s.set_center_freq(int(freq_hz))
+                        except Exception:
+                            pass
+
+                def set_gain(self, g):
+                    try:
+                        # if g <= 0 attempt AGC where available
+                        if g <= 0:
+                            try:
+                                if hasattr(self._s, 'set_agc'):
+                                    self._s.set_agc(True)
+                                else:
+                                    # some pyrtlsdr versions support 'gain = "auto"'
+                                    try:
+                                        self._s.gain = 'auto'
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                        else:
+                            try:
+                                self._s.gain = float(min(g, 50.0))
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                # readStream signature: (stream, [buffer], length, timeoutUs=...)
+                def readStream(self, stream, buffers, length, timeoutUs=500000):
+                    # buffers is a list containing a numpy array to fill
+                    try:
+                        # pyrtlsdr.read_samples returns complex64 array
+                        samples = self._s.read_samples(length)
+                        if samples is None:
+                            class _R:
+                                ret = 0
+                            return _R()
+                        n = min(len(samples), length)
+                        buf = buffers[0]
+                        # ensure dtype complex64
+                        if buf.dtype != _np.complex64:
+                            try:
+                                buf = buf.view(_np.complex64)
+                            except Exception:
+                                pass
+                        buf[:n] = samples[:n]
+
+                        class _R:
+                            pass
+
+                        r = _R()
+                        r.ret = n
+                        return r
+                    except Exception:
+                        class _R:
+                            ret = 0
+                        return _R()
+
+                def activateStream(self, stream):
+                    # no-op for pyrtlsdr wrapper
+                    return
+
+                def deactivateStream(self, stream):
+                    return
+
+                def closeStream(self, stream):
+                    return
+
+                def close(self):
+                    try:
+                        self._s.close()
+                    except Exception:
+                        pass
+
+            dev = _RtlSdrWrapper()
+
+            # Configure frequency, sample rate and gain
+            try:
+                dev.set_center_freq(freq_hz)
+                print(f"RTL-SDR (native): set frequency to {freq_hz} Hz")
+            except Exception:
+                pass
+            try:
+                sr = 2000000
+                dev.set_sample_rate(sr)
+                print(f"RTL-SDR (native): set sample rate to {sr} Hz")
+            except Exception:
+                pass
+            try:
+                dev.set_gain(gain)
+                print(f"RTL-SDR (native): set gain to {gain} dB (or AGC)")
+            except Exception:
+                pass
+
+            # mark device
+            dev._device_type = 'rtlsdr'
+            print("RTL-SDR: native pyrtlsdr backend configured")
+            return dev
+        except Exception as e:
+            print(f"RTL-SDR: native pyrtlsdr backend failed: {e}")
+
+    # Fall back to SoapySDR if available
+    if SoapySDR is None:
+        print("SoapySDR not installed and pyrtlsdr not available. Install pyrtlsdr or SoapySDR and retry.")
+        return None
+
+    try:
+        # Find RTL-SDR devices via Soapy
         results = SoapySDR.Device.enumerate("driver=rtlsdr")
         if not results:
             print("No RTL-SDR devices found")
             return None
-        
+
         print(f"Found RTL-SDR device: {results[0]}")
-        
+
         # Open first RTL-SDR device
         dev = SoapySDR.Device(results[0])
-        
+
         # Configure RX channel 0
         channel = 0
-        
+
         # Set frequency
         dev.setFrequency(SoapySDR.SOAPY_SDR_RX, channel, float(freq_hz))
         print(f"RTL-SDR: set frequency to {freq_hz} Hz")
-        
+
         # Set sample rate (RTL-SDR supports up to 2.4 MHz typically)
         # Use 2 MHz as default for better performance
         sample_rate = 2000000
         dev.setSampleRate(SoapySDR.SOAPY_SDR_RX, channel, float(sample_rate))
         print(f"RTL-SDR: set sample rate to {sample_rate} Hz")
-        
+
         # RTL-SDR doesn't have adjustable bandwidth filter, but we can set it anyway
         try:
             dev.setBandwidth(SoapySDR.SOAPY_SDR_RX, channel, float(rx_bw_hz))
             print(f"RTL-SDR: set bandwidth to {rx_bw_hz} Hz")
         except Exception:
             pass  # Some RTL-SDR drivers don't support setBandwidth
-        
+
         # Set gain (RTL-SDR gain range is typically 0-50 dB)
         # If gain is 0 or negative, enable AGC
         if gain <= 0:
@@ -349,17 +491,17 @@ def configure_rtlsdr(freq_hz: int, rx_bw_hz: int = 125000, gain: float = 40.0):
                 print(f"RTL-SDR: set gain to {min(gain, 50.0)} dB")
             except Exception as e:
                 print(f"RTL-SDR: could not set gain: {e}")
-        
+
         # Setup RX stream
         dev._rx_stream = dev.setupStream(SoapySDR.SOAPY_SDR_RX, SoapySDR.SOAPY_SDR_CF32, [channel])
         dev.activateStream(dev._rx_stream)
         print("RTL-SDR: RX stream activated")
-        
+
         # Add metadata for device type
         dev._device_type = 'rtlsdr'
-        
+
         return dev
-        
+
     except Exception as e:
         print(f"Failed to configure RTL-SDR device: {e}")
         return None
@@ -820,9 +962,50 @@ def main():
 
     stop_event = threading.Event()
     gps_thread = None
-    if args.gps_port:
-        gps_thread = threading.Thread(target=gps_reader, args=(args.gps_port, args.gps_baud, stop_event), daemon=True)
-        gps_thread.start()
+    # Validate GPS port before attempting to start the reader thread.
+    # Some paths (e.g. /dev/null) or missing devices can cause underlying
+    # serial drivers to raise errors; prefer to skip starting the thread
+    # when the port is clearly not usable.
+    try:
+        gps_port_val = getattr(args, 'gps_port', None)
+    except Exception:
+        gps_port_val = None
+
+    if gps_port_val:
+        try:
+            # Treat /dev/null as "no GPS"
+            if str(gps_port_val) == '/dev/null':
+                print('GPS: /dev/null given, skipping GPS reader')
+                gps_port_val = None
+        except Exception:
+            gps_port_val = None
+
+    if gps_port_val:
+        try:
+            # Ensure path exists and looks like a character device on Unix
+            try:
+                st = os.stat(gps_port_val)
+                import stat as _stat
+                if not _stat.S_ISCHR(st.st_mode):
+                    print(f"GPS: port {gps_port_val} is not a character device; skipping GPS reader")
+                    gps_port_val = None
+            except FileNotFoundError:
+                print(f"GPS: port {gps_port_val} does not exist; skipping GPS reader")
+                gps_port_val = None
+            except Exception:
+                # If stat fails for any reason, fall back to attempting to open
+                # the port in the thread where import errors are handled.
+                pass
+        except Exception:
+            gps_port_val = None
+
+    if gps_port_val:
+        try:
+            gps_thread = threading.Thread(target=gps_reader, args=(gps_port_val, args.gps_baud, stop_event), daemon=True)
+            gps_thread.start()
+        except Exception as e:
+            print(f"Failed to start GPS thread for {gps_port_val}: {e}")
+            gps_thread = None
     # rx_bw provided in kHz on CLI; convert to Hz
     try:
         rx_bw_khz = float(getattr(args, 'rx_bw', 125.0))
